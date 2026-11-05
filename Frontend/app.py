@@ -30,6 +30,11 @@ def obtener_modelo(estrategia: str):
     return modelo_ia.obtener_modelo(estrategia)
 
 
+@st.cache_data(show_spinner="Comparando modelos (puede tardar unos segundos)...")
+def obtener_comparacion(estrategia: str):
+    return modelo_ia.comparar_modelos(estrategia)
+
+
 @st.cache_data
 def obtener_datos():
     return modelo_ia.cargar_datos()
@@ -65,7 +70,9 @@ st.sidebar.markdown(
     "[datos.gov.co](https://www.datos.gov.co/Transporte/Trafico-Portuario-Mar-timo-En-Colombia/5r3g-zv5z/about_data)"
 )
 
-tab_pred, tab_metricas, tab_datos = st.tabs(["🔮 Predicción", "📊 Desempeño del modelo", "🗂️ Datos"])
+tab_pred, tab_metricas, tab_comp, tab_arbol, tab_datos = st.tabs(
+    ["🔮 Predicción", "📊 Desempeño del modelo", "🧪 Comparación de modelos", "🌳 Árbol de decisión", "🗂️ Datos"]
+)
 
 # --------------------------------------------------------------------------- #
 # Pestaña 1: Predicción
@@ -163,8 +170,71 @@ with tab_metricas:
     st.code(modelo.reporte)
     st.caption(f"Entrenamiento: {modelo.n_train} registros · Prueba: {modelo.n_test} registros · DecisionTreeClassifier")
 
+
 # --------------------------------------------------------------------------- #
-# Pestaña 3: Datos
+# Pestaña 3: Comparación de modelos
+# --------------------------------------------------------------------------- #
+with tab_comp:
+    st.header("Comparación de modelos")
+    st.write(
+        "Se entrenan cuatro modelos con los mismos datos y se evalúan de dos formas:\n"
+        "- **Aleatoria 80/20:** la del informe. Mezcla todos los años, así que el modelo ya vio meses de 2026 al entrenar.\n"
+        "- **Temporal:** entrena con 2018–2024 y prueba con 2025–2026. Es la prueba más honesta: "
+        "simula predecir periodos que todavía no se conocen."
+    )
+    comp = obtener_comparacion(estrategia)
+    metrica = st.selectbox("Métrica a graficar", ["F1 (ALTO)", "Recall (ALTO)", "Precisión (ALTO)", "Accuracy"])
+    nombres_cortos = dict(
+        zip(modelo_ia.MODELOS_COMPARACION, ["Árbol (informe)", "Árbol prof. 8", "Random Forest", "Reg. logística"])
+    )
+    grafica = comp.assign(Modelo=comp["Modelo"].map(nombres_cortos)).pivot(
+        index="Modelo", columns="Evaluación", values=metrica
+    )
+    st.bar_chart(grafica, stack=False, horizontal=True)
+    st.dataframe(
+        comp.style.format({c: "{:.3f}" for c in ["Accuracy", "Precisión (ALTO)", "Recall (ALTO)", "F1 (ALTO)"]}),
+        width="stretch",
+        hide_index=True,
+    )
+    st.info(
+        "**Cómo leerlo:** la clase ALTO es la minoritaria (~7 %), por eso el F1 de ALTO es más informativo que el accuracy. "
+        "Si un modelo baja mucho en la evaluación temporal frente a la aleatoria, está memorizando el pasado en lugar de generalizar."
+    )
+
+# --------------------------------------------------------------------------- #
+# Pestaña 4: Árbol de decisión
+# --------------------------------------------------------------------------- #
+with tab_arbol:
+    st.header("¿Cómo decide el árbol?")
+    info = modelo_ia.info_arbol(modelo)
+    a1, a2 = st.columns(2)
+    a1.metric("Profundidad del árbol", info["profundidad"])
+    a2.metric("Hojas (reglas finales)", info["hojas"])
+
+    niveles = st.slider("Niveles a mostrar", 1, 4, 3)
+    st.pyplot(modelo_ia.figura_arbol(modelo, max_depth=niveles))
+    st.caption(
+        "Cada caja es una pregunta del tipo *variable ≤ valor*. Si la respuesta es sí se sigue por la izquierda, si no por la derecha. "
+        "El color indica la clase mayoritaria (azul = ALTO, naranja = BAJO)."
+    )
+
+    with st.expander("Códigos numéricos de cada categoría (para leer las preguntas del árbol)"):
+        st.write(
+            "El árbol trabaja con números. Por ejemplo, `ZONA PORTUARIA <= 0.5` significa "
+            "*zona con código 0*."
+        )
+        for col, categorias in modelo_ia.codigos_categorias(modelo).items():
+            st.markdown(f"**{col}**")
+            st.dataframe(
+                pd.DataFrame({"Código": range(len(categorias)), "Categoría": categorias}),
+                width="stretch",
+                hide_index=True,
+            )
+    with st.expander("Reglas en texto"):
+        st.code(modelo_ia.reglas_arbol(modelo, max_depth=niveles))
+
+# --------------------------------------------------------------------------- #
+# Pestaña 5: Datos
 # --------------------------------------------------------------------------- #
 with tab_datos:
     st.header("Dataset: Tráfico Portuario Marítimo en Colombia")
@@ -178,4 +248,4 @@ with tab_datos:
     st.bar_chart(fluvial_zona[fluvial_zona > 0])
 
     st.subheader("Vista previa")
-    st.dataframe(df.head(200), use_container_width=True)
+    st.dataframe(df.head(200), width="stretch")

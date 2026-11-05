@@ -66,3 +66,23 @@ def test_prediccion_valida(modelo):
 def test_entrada_invalida(modelo, args):
     with pytest.raises(modelo_ia.EntradaInvalida):
         modelo_ia.predecir_trafico(*args, modelo=modelo)
+
+
+def test_comparacion_de_modelos():
+    comp = modelo_ia.comparar_modelos()
+    assert set(comp["Modelo"]) == set(modelo_ia.MODELOS_COMPARACION)
+    assert comp["Evaluación"].nunique() == 2  # aleatoria + temporal
+    assert len(comp) == 2 * len(modelo_ia.MODELOS_COMPARACION)
+    assert comp["Accuracy"].between(0, 1).all()
+    assert (comp["F1 (ALTO)"] > 0.6).all()
+
+
+def test_interpretabilidad_del_arbol(modelo):
+    info = modelo_ia.info_arbol(modelo)
+    assert info["profundidad"] > 3 and info["hojas"] > 10
+    codigos = modelo_ia.codigos_categorias(modelo)
+    assert set(codigos) == set(modelo_ia.COLUMNAS_CATEGORICAS)
+    assert "BARRANCABERMEJA" in codigos[modelo_ia.COL_ZONA]
+    assert "ZONA PORTUARIA" in modelo_ia.reglas_arbol(modelo, max_depth=2)
+    fig = modelo_ia.figura_arbol(modelo, max_depth=2)
+    assert fig.axes

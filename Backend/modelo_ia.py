@@ -22,12 +22,21 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OrdinalEncoder
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.tree import DecisionTreeClassifier, export_text
 
 # --------------------------------------------------------------------------- #
 # Configuración
@@ -287,11 +296,155 @@ def predecir_trafico(
 
 
 # --------------------------------------------------------------------------- #
+# 5. Comparación de modelos y evaluación temporal
+# --------------------------------------------------------------------------- #
+MODELOS_COMPARACION = (
+    "Árbol de decisión (modelo del informe)",
+    "Árbol de decisión (profundidad máx. 8)",
+    "Random Forest (200 árboles)",
+    "Regresión logística",
+)
+ANIO_CORTE_DEFECTO = 2024
+
+
+def _preprocesador_ordinal() -> ColumnTransformer:
+    return ColumnTransformer(
+        [
+            ("categoricas", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), COLUMNAS_CATEGORICAS),
+            ("numericas", "passthrough", COLUMNAS_NUMERICAS),
+        ]
+    )
+
+
+def construir_modelo_comparacion(nombre: str, random_state: int = 42) -> Pipeline:
+    """Crea el pipeline de uno de los modelos de ``MODELOS_COMPARACION``."""
+    if nombre == MODELOS_COMPARACION[0]:
+        return Pipeline([("pre", _preprocesador_ordinal()), ("clf", DecisionTreeClassifier(random_state=random_state))])
+    if nombre == MODELOS_COMPARACION[1]:
+        return Pipeline(
+            [("pre", _preprocesador_ordinal()), ("clf", DecisionTreeClassifier(max_depth=8, random_state=random_state))]
+        )
+    if nombre == MODELOS_COMPARACION[2]:
+        return Pipeline(
+            [("pre", _preprocesador_ordinal()), ("clf", RandomForestClassifier(n_estimators=200, random_state=random_state, n_jobs=-1))]
+        )
+    if nombre == MODELOS_COMPARACION[3]:
+        # La regresión logística necesita one-hot y variables escaladas.
+        pre = ColumnTransformer(
+            [
+                ("categoricas", OneHotEncoder(handle_unknown="ignore"), COLUMNAS_CATEGORICAS),
+                ("numericas", StandardScaler(), COLUMNAS_NUMERICAS),
+            ]
+        )
+        return Pipeline([("pre", pre), ("clf", LogisticRegression(max_iter=2000))])
+    raise ValueError(f"Modelo desconocido: {nombre}")
+
+
+def _metricas(y_real, y_pred) -> dict:
+    return {
+        "Accuracy": accuracy_score(y_real, y_pred),
+        "Precisión (ALTO)": precision_score(y_real, y_pred, zero_division=0),
+        "Recall (ALTO)": recall_score(y_real, y_pred, zero_division=0),
+        "F1 (ALTO)": f1_score(y_real, y_pred, zero_division=0),
+    }
+
+
+def comparar_modelos(
+    estrategia_umbral: str = "mediana",
+    ruta_csv: str | Path = RUTA_CSV,
+    anio_corte: int = ANIO_CORTE_DEFECTO,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Compara los modelos con dos formas de evaluar.
+
+    1. **Aleatoria 80/20** (estratificada): la del informe. Mezcla años, por lo que
+       el modelo "ve" meses de 2026 al entrenar.
+    2. **Temporal**: entrena con los años <= ``anio_corte`` y prueba con los
+       posteriores. Simula el uso real: predecir periodos que aún no se conocen.
+       El umbral se calcula solo con los datos de entrenamiento.
+    """
+    df = cargar_datos(ruta_csv)
+    filas = []
+
+    # --- Evaluación aleatoria ---
+    umbral = calcular_umbral(df[COL_OBJETIVO_CONTINUO], estrategia_umbral)
+    y = crear_objetivo(df, umbral)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        df[FEATURES], y, test_size=0.2, random_state=random_state, stratify=y
+    )
+    nombre_aleatoria = "Aleatoria 80/20"
+    for nombre in MODELOS_COMPARACION:
+        modelo = construir_modelo_comparacion(nombre, random_state).fit(X_tr, y_tr)
+        filas.append({"Modelo": nombre, "Evaluación": nombre_aleatoria, **_metricas(y_te, modelo.predict(X_te))})
+
+    # --- Evaluación temporal ---
+    train = df[df[COL_ANIO] <= anio_corte]
+    test = df[df[COL_ANIO] > anio_corte]
+    nombre_temporal = f"Temporal (≤{anio_corte} → {anio_corte + 1}+)"
+    if len(train) and len(test):
+        umbral_t = calcular_umbral(train[COL_OBJETIVO_CONTINUO], estrategia_umbral)
+        y_tr_t, y_te_t = crear_objetivo(train, umbral_t), crear_objetivo(test, umbral_t)
+        for nombre in MODELOS_COMPARACION:
+            modelo = construir_modelo_comparacion(nombre, random_state).fit(train[FEATURES], y_tr_t)
+            filas.append(
+                {"Modelo": nombre, "Evaluación": nombre_temporal, **_metricas(y_te_t, modelo.predict(test[FEATURES]))}
+            )
+    return pd.DataFrame(filas)
+
+
+# --------------------------------------------------------------------------- #
+# 6. Interpretabilidad del árbol
+# --------------------------------------------------------------------------- #
+def codigos_categorias(modelo: ResultadoEntrenamiento) -> dict:
+    """Código numérico que el árbol asigna a cada categoría (0, 1, 2, ...)."""
+    codificador = modelo.pipeline.named_steps["preprocesamiento"].named_transformers_["categoricas"]
+    return {col: list(cats) for col, cats in zip(COLUMNAS_CATEGORICAS, codificador.categories_)}
+
+
+def info_arbol(modelo: ResultadoEntrenamiento) -> dict:
+    arbol = modelo.pipeline.named_steps["arbol"]
+    return {"profundidad": int(arbol.get_depth()), "hojas": int(arbol.get_n_leaves())}
+
+
+def reglas_arbol(modelo: ResultadoEntrenamiento, max_depth: int = 3) -> str:
+    """Reglas del árbol en texto (solo los primeros niveles)."""
+    return export_text(
+        modelo.pipeline.named_steps["arbol"], feature_names=FEATURES, max_depth=max_depth
+    )
+
+
+def figura_arbol(modelo: ResultadoEntrenamiento, max_depth: int = 3):
+    """Dibuja los primeros niveles del árbol (matplotlib). Devuelve la figura."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.tree import plot_tree
+
+    fig, ax = plt.subplots(figsize=(18, 7))
+    plot_tree(
+        modelo.pipeline.named_steps["arbol"],
+        feature_names=FEATURES,
+        class_names=["BAJO", "ALTO"],
+        max_depth=max_depth,
+        filled=True,
+        rounded=True,
+        fontsize=10,
+        impurity=False,
+        ax=ax,
+    )
+    ax.set_title(f"Primeros {max_depth} niveles del árbol de decisión (el árbol completo es mucho más profundo)")
+    fig.tight_layout()
+    return fig
+
+
+# --------------------------------------------------------------------------- #
 # Ejecución por consola
 # --------------------------------------------------------------------------- #
 def _main() -> None:
     parser = argparse.ArgumentParser(description="Entrena y evalúa el modelo SwiftDrive.")
     parser.add_argument("--umbral", choices=ESTRATEGIAS_UMBRAL, default="mediana")
+    parser.add_argument("--comparar", action="store_true", help="compara modelos (aleatoria y temporal)")
     args = parser.parse_args()
 
     resultado = entrenar(estrategia_umbral=args.umbral)
@@ -315,6 +468,10 @@ def _main() -> None:
         6,
         modelo=resultado,
     )
+    if args.comparar:
+        print("\n=== Comparación de modelos ===")
+        print(comparar_modelos(args.umbral).round(3).to_string(index=False))
+
     print("\nEjemplo -> Barrancabermeja / Ecopetrol / Granel líquido / 2026-06:", ejemplo)
 
 

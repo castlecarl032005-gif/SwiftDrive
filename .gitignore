@@ -4,5 +4,10 @@ __pycache__/
 venv/
 .pytest_cache/
 .ipynb_checkpoints/
-# El modelo se regenera automáticamente con: python Backend/modelo_ia.py
+
+# Archivos de configuración privada
+.streamlit/secrets.toml
+.env
+
+# Modelo generado automáticamente
 Backend/*.joblib

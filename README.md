@@ -104,3 +104,33 @@ La pestaña **🌳 Árbol de decisión** y la sección 10 del notebook dibujan l
 
 Superintendencia de Transporte, *Tráfico Portuario Marítimo en Colombia* (actualizado el 1 de octubre de 2026), en
 [datos.gov.co](https://www.datos.gov.co/Transporte/Trafico-Portuario-Mar-timo-En-Colombia/5r3g-zv5z/about_data).
+
+
+## Acceso por roles y entrenamiento desde la aplicación
+
+La interfaz ahora solicita inicio de sesión y reconoce dos roles:
+
+- **admin:** puede entrenar/reentrenar el modelo, consultar la evaluación y la matriz de confusión, comparar modelos, inspeccionar el árbol y consultar los datos.
+- **usuario:** puede utilizar la pestaña de predicción con el modelo que ya haya entrenado el administrador.
+
+### Configurar credenciales en local
+
+1. Crea la carpeta `.streamlit` en la raíz del proyecto si no existe.
+2. Copia `.streamlit/secrets.toml.example` y nombra la copia `secrets.toml`.
+3. Cambia los nombres de usuario y contraseñas de ejemplo.
+4. Ejecuta `streamlit run Frontend/app.py`.
+
+No compartas ni subas `.streamlit/secrets.toml` a GitHub. El archivo está incluido en `.gitignore`.
+
+### Configurar credenciales en Streamlit Community Cloud
+
+En la configuración de la aplicación, abre **Settings → Secrets** y pega el contenido de `secrets.toml` (con contraseñas propias). No escribas las credenciales directamente en `app.py`.
+
+### Flujo de uso
+
+1. Inicia sesión como `admin`.
+2. Abre la pestaña **Entrenar**, elige la estrategia de umbral y confirma el entrenamiento.
+3. El modelo entrenado se guarda en `Backend/modelo_swiftdrive.joblib`.
+4. Cierra sesión e inicia con el usuario normal para probar la pestaña **Predecir**.
+
+**Nota sobre el despliegue:** el modelo se guarda en el almacenamiento local del proceso de Streamlit. En servicios de despliegue como Streamlit Community Cloud, los archivos locales generados durante la ejecución no deben considerarse almacenamiento permanente: un reinicio o redespliegue puede requerir volver a entrenar. Para persistencia garantizada entre reinicios se debe conectar almacenamiento externo o desplegar un artefacto de modelo versionado.
